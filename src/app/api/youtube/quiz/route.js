@@ -14,7 +14,7 @@ export async function POST(request) {
 
     const { courseId, chapterNumber, chapterContent, chapterTitle, difficulty = "intermediate" } = await request.json();
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
 
     const prompt = `Generate a comprehensive quiz for this chapter of an educational course.
 
@@ -162,7 +162,8 @@ export async function PUT(request) {
     });
 
     const score = Math.round((correctCount / quiz.questions.length) * 100);
-    const passed = score >= quiz.passingScore;
+    const requiredScore = quiz.passingScore || 70;
+    const passed = score >= requiredScore;
     try {
       await adminDb
         .collection("users")

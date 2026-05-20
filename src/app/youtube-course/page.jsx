@@ -210,7 +210,8 @@ export default function YouTubeCourse() {
           router.push("/premium");
           return;
         }
-        throw new Error(courseResult.error || "Failed to generate course");
+        const fallbackMsg = typeof courseResult === 'string' ? courseResult : "Failed to generate course";
+        throw new Error(courseResult.error || fallbackMsg);
       }
       setCourseData(courseResult);
       setProgressStep(8);

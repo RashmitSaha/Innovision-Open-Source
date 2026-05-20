@@ -2,31 +2,87 @@ import { NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-function safeJsonParse(text) {
-  let cleaned = text;
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
-  let jsonStr = jsonMatch[0];
-  try {
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    console.log("Initial parse failed, attempting to fix JSON...");
-  }
-  try {
-    jsonStr = jsonStr.replace(/(?<!\\)\n/g, "\\n");
-    jsonStr = jsonStr.replace(/(?<!\\)\r/g, "\\r");
-    jsonStr = jsonStr.replace(/(?<!\\)\t/g, "\\t");
-    jsonStr = jsonStr.replace(/[\x00-\x1F\x7F]/g, (char) => {
-      if (char === '\n' || char === '\r' || char === '\t') return '';
-      return '';
-    });
-
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    console.error("JSON parse error:", e.message);
-    return null;
-  }
-}
+const courseSchema = {
+  type: "OBJECT",
+  properties: {
+    title: { type: "STRING" },
+    description: { type: "STRING" },
+    difficulty: { type: "STRING" },
+    estimatedDuration: { type: "STRING" },
+    learningObjectives: { type: "ARRAY", items: { type: "STRING" } },
+    prerequisites: { type: "ARRAY", items: { type: "STRING" } },
+    chapters: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          number: { type: "INTEGER" },
+          title: { type: "STRING" },
+          description: { type: "STRING" },
+          duration: { type: "STRING" },
+          content: {
+            type: "OBJECT",
+            properties: {
+              introduction: { type: "STRING" },
+              mainContent: { type: "STRING" },
+              keyPoints: { type: "ARRAY", items: { type: "STRING" } },
+              examples: { type: "ARRAY", items: { type: "STRING" } },
+              summary: { type: "STRING" }
+            },
+            required: ["introduction", "mainContent", "keyPoints", "summary"]
+          },
+          exercises: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: {
+                type: { type: "STRING" },
+                title: { type: "STRING" },
+                description: { type: "STRING" },
+                difficulty: { type: "STRING" },
+                estimatedTime: { type: "STRING" }
+              },
+              required: ["type", "title", "description"]
+            }
+          },
+          quiz: {
+            type: "OBJECT",
+            properties: {
+              title: { type: "STRING" },
+              questions: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    question: { type: "STRING" },
+                    options: { type: "ARRAY", items: { type: "STRING" } },
+                    correctAnswer: { type: "INTEGER" },
+                    explanation: { type: "STRING" }
+                  },
+                  required: ["question", "options", "correctAnswer", "explanation"]
+                }
+              }
+            },
+            required: ["questions"]
+          }
+        },
+        required: ["title", "description", "content", "quiz"]
+      }
+    },
+    finalProject: {
+      type: "OBJECT",
+      properties: {
+        title: { type: "STRING" },
+        description: { type: "STRING" },
+        requirements: { type: "ARRAY", items: { type: "STRING" } },
+        deliverables: { type: "ARRAY", items: { type: "STRING" } },
+        estimatedTime: { type: "STRING" }
+      },
+      required: ["title", "description", "requirements", "deliverables"]
+    }
+  },
+  required: ["title", "description", "chapters", "finalProject"]
+};
 
 export async function POST(request) {
   try {
@@ -39,6 +95,7 @@ export async function POST(request) {
     if (!process.env.GEMINI_API_KEY) {
       return NextResponse.json({ error: "AI service not configured. Please add GEMINI_API_KEY to your environment." }, { status: 500 });
     }
+
     let session = null;
     let userEmail = "guest";
 
@@ -51,6 +108,7 @@ export async function POST(request) {
     } catch (authError) {
       console.warn("Auth not available, continuing as guest:", authError.message);
     }
+
     if (session?.user?.email) {
       try {
         const { canGenerateYouTubeCourse } = await import("@/lib/premium");
@@ -71,86 +129,36 @@ export async function POST(request) {
       }
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-    const prompt = `Create a comprehensive learning course from this YouTube video.
+    // Configure model to enforce valid JSON mapping natively
+    const model = genAI.getGenerativeModel({
+      model: "gemini-3.5-flash",
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: courseSchema,
+      }
+    });
+
+    const prompt = `Create a comprehensive structured learning course derived from this educational YouTube video transcript.
 
 Video Title: ${title}
 Video Author: ${author || 'Unknown'}
-Transcript (first 10000 chars): ${transcript.substring(0, 10000)}
+Transcript Context: ${transcript.substring(0, 12000)}
 
-Generate a course with 5-6 chapters. Return ONLY valid JSON with this structure (no markdown, no code blocks):
-
-{
-  "title": "Course Title",
-  "description": "Course description in 2-3 sentences",
-  "difficulty": "beginner",
-  "estimatedDuration": "2-3 hours",
-  "learningObjectives": ["Objective 1", "Objective 2"],
-  "prerequisites": ["Prerequisite 1"],
-  "chapters": [
-    {
-      "number": 1,
-      "title": "Chapter Title",
-      "description": "Chapter description",
-      "duration": "20 minutes",
-      "content": {
-        "introduction": "Introduction paragraph",
-        "mainContent": "Main content with explanations. Use simple text without special characters.",
-        "keyPoints": ["Point 1", "Point 2", "Point 3"],
-        "examples": ["Example 1"],
-        "summary": "Chapter summary"
-      },
-      "exercises": [
-        {
-          "type": "practice",
-          "title": "Exercise Title",
-          "description": "Exercise description",
-          "difficulty": "easy",
-          "estimatedTime": "10 minutes"
-        }
-      ],
-      "quiz": {
-        "title": "Chapter Quiz",
-        "questions": [
-          {
-            "question": "Question text?",
-            "options": ["Option A", "Option B", "Option C", "Option D"],
-            "correctAnswer": 0,
-            "explanation": "Explanation"
-          }
-        ]
-      }
-    }
-  ],
-  "finalProject": {
-    "title": "Capstone Project",
-    "description": "Project description",
-    "requirements": ["Requirement 1", "Requirement 2"],
-    "deliverables": ["Deliverable 1"],
-    "estimatedTime": "1-2 hours"
-  }
-}
-
-IMPORTANT RULES:
-1. Return ONLY valid JSON - no markdown, no code blocks
-2. Do NOT use newlines or special characters inside string values
-3. Keep all text simple and clean
-4. Make sure all brackets and quotes are properly closed
-5. Generate exactly 5-6 chapters`;
+Generate exactly 5-6 informative chapters testing real conceptual understanding. Formulate challenging multiple choice questions for each chapter quiz. Ensure the final project encapsulates the core practical application of the video text.`;
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
 
-    console.log("AI Response length:", text.length);
-
-    const courseData = safeJsonParse(text);
-
-    if (!courseData) {
-      console.error("Failed to parse AI response. First 500 chars:", text.substring(0, 500));
+    let courseData = null;
+    try {
+      courseData = JSON.parse(text);
+    } catch (parseError) {
+      console.error("Native structural parse failed:", parseError.message, text);
       return NextResponse.json({
-        error: "Failed to generate course structure. The AI returned an invalid response. Please try again."
+        error: "Failed to assemble course format securely. Please try again."
       }, { status: 500 });
     }
+
     if (courseData.chapters && Array.isArray(courseData.chapters)) {
       courseData.chapters = courseData.chapters.map((ch, index) => ({
         ...ch,
@@ -159,6 +167,7 @@ IMPORTANT RULES:
     } else {
       courseData.chapters = [];
     }
+
     const courseId = `course-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const enhancedCourseData = {
       ...courseData,
@@ -178,6 +187,7 @@ IMPORTANT RULES:
       enrolledAt: new Date().toISOString(),
       lastAccessedAt: new Date().toISOString()
     };
+
     let savedToDb = false;
     let finalCourseId = courseId;
 
@@ -197,7 +207,6 @@ IMPORTANT RULES:
         savedToDb = true;
         console.log("Course saved to Firebase with ID:", docRef.id);
 
-
         try {
           const { createNotification } = await import("@/lib/create-notification");
           await createNotification(adminDb, {
@@ -214,6 +223,7 @@ IMPORTANT RULES:
     } catch (dbError) {
       console.warn("Could not save to Firebase:", dbError.message);
     }
+
     try {
       const { storeCourse } = await import("@/lib/course-store");
       storeCourse(finalCourseId, enhancedCourseData);
